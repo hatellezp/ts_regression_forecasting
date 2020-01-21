@@ -159,6 +159,91 @@ def predict_custom_out_all_series(f_data, f_models_by_series, f_steps_out):
     res_preds = np.array(res_preds)
     return res_preds
 
+
+# this function creates examples that take into account not only the
+# immediate past, but even further periods
+def to_regression_examples(f_array, f_steps_in, f_steps_out,
+                           f_series,
+                           f_days,
+                           f_test_size,
+                           f_splitter_method=split_to_test,
+                           f_periods=None):
+    if f_periods is None:
+        f_periods = []
+
+    # create list with all periods and include the zero period
+    res_periods = [0]
+    res_periods.extend(f_periods)
+    res_periods.sort()
+    greater_period = max(res_periods)
+
+    (res_X, res_y) = big_array_splitter(f_array, f_steps_in, f_steps_out)
+
+    # this part of the code modifies the examples to take into account the
+    # past, we see one year in the past and six months in the past
+    res_length_X = len(res_X[0])
+
+    # create new array for the examples
+    f_periods_length = len(f_periods)
+    res_new_X = np.zeros((series, res_length_X - greater_period, steps_in * (1 + f_periods_length)))
+
+    # populate the array with the concatenation of values
+    for f_s in range(f_series):
+        for f_i in range(len(res_new_X[0])):
+
+            list_of_periods_to_concatenate = [res_X[f_s][f_i + f_p] for f_p in res_periods]
+            res_new_X[f_s][f_i] = np.concatenate(list_of_periods_to_concatenate)
+
+    # create a new array for the target examples with the values that
+    # correspond to the new_X array
+
+    res_new_y = np.zeros((f_series, res_length_X - greater_period, f_steps_out))
+
+    for f_s in range(f_series):
+        for f_i in range(len(res_new_X[0])):
+            res_new_y[f_s][f_i] = res_y[f_s][f_i + greater_period]
+
+    # create the dataset, one per series
+    res_dataset = f_splitter_method(res_new_X, res_new_y, f_days, f_series, f_steps_in,
+                                    f_steps_out, f_test_size)
+
+    return res_dataset
+
+
+def create_validation_dataframe(f_df, f_steps_in, f_series, f_periods=None, f_offset=0):
+    if f_periods is None:
+        f_periods = []
+    # immediate last steps_in days
+
+    list_of_validation_dataframes = []
+    res_periods = [0]
+    res_periods.extend(f_periods)
+    res_periods.sort(reverse=True)
+    res_periods_length = len(res_periods)
+
+    for res_p in res_periods:
+        left_bound = - (f_steps_in + f_offset + res_p)
+        right_bound = - (f_offset + res_p)
+
+        # depends of the offset
+        if right_bound == 0:
+            validation_dataframe = f_df.iloc[left_bound:].copy()
+        else:
+            validation_dataframe = f_df.iloc[left_bound: right_bound].copy()
+
+        validation_dataframe = to_array(validation_dataframe)
+        list_of_validation_dataframes.append(validation_dataframe)
+
+    res_X_validation = np.zeros((f_series, f_steps_in * res_periods_length))
+    for f_s in range(f_series):
+        list_to_concatenate = [validation_dataframe[f_s] for validation_dataframe in
+                               list_of_validation_dataframes]
+        res_X_validation[f_s] = np.concatenate(list_to_concatenate)
+
+    res_y_validation_dataframe = f_df.tail(f_offset).copy()
+
+    return res_X_validation, res_y_validation_dataframe
+
 ####################################################################################################
 ####################################################################################################
 
@@ -177,8 +262,7 @@ if __name__ == '__main__':
     test_size = 0.1
 
     # periods, for using the past in the regression methods
-    m_period = 182
-    y_period = 365
+    p_periods = [182, 365]
 
     path_to_data = 'train.csv'
 
@@ -197,12 +281,14 @@ if __name__ == '__main__':
     ############################################################################
     ############################################################################
 
+    # prepare the data
+
     # read the csv data
     df = pd.read_csv(path_to_data, parse_dates=['Day'], index_col='Day')
 
     # remove outliers
     dfc = df.copy(deep=True)
-    dfc = remove_outliers(dfc, alpha=2, gamma=0.6, beta=3, method='median')
+    dfc = remove_outliers(dfc)
 
     # scale and keep track of the scaler
     (dfc, scaler) = scale(dfc, scaler_to_use)
@@ -213,70 +299,28 @@ if __name__ == '__main__':
     # transform the data to a numpy array
     data = to_array(dfc)
 
-    # split to create examples, this method creates examples of the form:
-    # x_i -> y_i
-    # with x_i having length steps_in and y_i having length steps_out
-    # it is to predict the next y_i days having looked to the last x_i days
-    (X, y) = big_array_splitter(data, steps_in, steps_out)
-
-    # this part of the code modifies the examples to take into account the
-    # past, we see one year in the past and six months in the past
-    length_X = len(X[0])
-
-    # create new array for the examples
-    new_X = np.zeros((series, length_X - y_period, steps_in * 3))
-
-    # populate the array with the concatenation of values
-    for s in range(series):
-        for i in range(len(new_X[0])):
-            new_X[s][i] = np.concatenate([X[s][i],
-                                          X[s][i + m_period],
-                                          X[s][i + y_period]])
-
-    # create a new array for the target examples with the values that
-    # correspond to the new_X array
-    new_y = np.zeros((series, length_X - y_period, steps_out))
-
-    for s in range(series):
-        for i in range(len(new_X[0])):
-            new_y[s][i] = y[s][i + y_period]
-
     # create the datasets, one per serie
-    datasets = split_to_test(new_X, new_y, days, series, steps_in, steps_out,
-                             test_size)
+    datasets = to_regression_examples(data, steps_in, steps_out, series, days,
+                                      test_size,
+                                      f_periods=p_periods)
+
+    ############################################################################
+    ############################################################################
 
     # fit models to the data
     models_by_series_list = []
     # train each model
     for model in models_constructors:
-        models_by_series = train_for_one_step_all_series(datasets, model, steps_out)
+        models_by_series = train_for_one_step_all_series(datasets, model,
+                                                         steps_out)
         models_by_series_list.append(models_by_series)
 
-    ###############################
+    ############################################################################
+    ############################################################################
     # create a validation dataframe
-
-    # immediate last steps_in days
-    X2_validation_dataframe = dfc.iloc[-steps_in - steps_out: - steps_out].copy()
-    # take last six months
-    X1_validation_dataframe = dfc.iloc[-steps_in - steps_out - m_period:
-                                       -steps_out - m_period].copy()
-    # take last year too
-    X0_validation_dataframe = dfc.iloc[-steps_in - steps_out - y_period:
-                                       -steps_out - y_period].copy()
-
-    y_validation_dataframe = dfc.tail(steps_out).copy()
-
-    # transform to array
-    X0_validation = to_array(X0_validation_dataframe)
-    X1_validation = to_array(X1_validation_dataframe)
-    X2_validation = to_array(X2_validation_dataframe)
-
-    # transform to an example by concatenation
-    X_validation = np.zeros((series, steps_in*3))
-    for s in range(series):
-        X_validation[s] = np.concatenate([X0_validation[s],
-                                          X1_validation[s],
-                                          X2_validation[s]])
+    X_validation, y_validation_dataframe = create_validation_dataframe(dfc, steps_in, series,
+                                                                       f_periods=p_periods,
+                                                                       f_offset=steps_out)
 
     X_validation = np.array([x.reshape((1, -1)) for x in X_validation])
 
@@ -307,19 +351,9 @@ if __name__ == '__main__':
     for i in range(number_of_models):
         scores[i] = compute_score(df.copy(), validation_futures[i], steps_out, smape_loss)
 
-
-    # with the same procedure as the validation prediction, predict the future
-    X0_future = dfc.tail(steps_in + y_period).head(steps_in).copy()
-    X1_future = dfc.tail(steps_in + m_period).head(steps_in).copy()
-    X2_future = dfc.tail(steps_in).copy()
-
-    X0_future = to_array(X0_future)
-    X1_future = to_array(X1_future)
-    X2_future = to_array(X2_future)
-
-    X_future = np.zeros((series, steps_in * 3))
-    for s in range(series):
-        X_future[s] = np.concatenate([X0_future[s], X1_future[s], X2_future[s]])
+    X_future, _ = create_validation_dataframe(dfc, steps_in, series,
+                                                                       f_periods=p_periods,
+                                                                       f_offset=0)
 
     X_future = np.array([x.reshape((1, -1)) for x in X_future])
 
