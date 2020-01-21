@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 
 import sklearn.kernel_ridge
 from sklearn import preprocessing
+from sklearn import base
 
 from tools import *
 from preprocessing import *
@@ -71,7 +72,7 @@ def demerge_dataset(f_dataset, f_steps_out):
     return res_demerged_dataset
 
 
-def train_for_one_step(f_dataset, f_model, f_steps_out, f_params=None):
+def train_for_one_step(f_dataset, f_model, f_steps_out, f_params=None, f_clone=False):
     """
     train_for_one_step follows demerge_dataset, it creates and train a number
     of steps_out models, one for each coordinate in the target vectors
@@ -85,7 +86,11 @@ def train_for_one_step(f_dataset, f_model, f_steps_out, f_params=None):
     res_models = []
 
     for f_i in range(f_steps_out):
-        res_m = f_model(**f_params)
+
+        if f_clone:
+            res_m = base.clone(f_model)
+        else:
+            res_m = f_model(**f_params)
 
         [f_X_train, _, f_t_train, _] = res_demerged_dataset[f_i]
 
@@ -96,7 +101,7 @@ def train_for_one_step(f_dataset, f_model, f_steps_out, f_params=None):
     return res_models
 
 
-def train_for_one_step_all_series(f_dataset, f_model, f_steps_out, f_params=None):
+def train_for_one_step_all_series(f_dataset, f_model, f_steps_out, f_params=None, f_clone=False):
     """
     train_for_one_step_all_series is a wrapper for the train_for_one_step
     function
@@ -110,7 +115,7 @@ def train_for_one_step_all_series(f_dataset, f_model, f_steps_out, f_params=None
     res_models_by_series = []
 
     for f_i in range(len(f_dataset)):
-        res_models = train_for_one_step(f_dataset[f_i], f_model, f_steps_out, f_params)
+        res_models = train_for_one_step(f_dataset[f_i], f_model, f_steps_out, f_params, f_clone)
         res_models_by_series.append(res_models)
 
     return res_models_by_series
@@ -253,7 +258,7 @@ if __name__ == '__main__':
     ############################################################################
     ############################################################################
     # save data to file or plot
-    plot_to_file = False
+    plot_to_file = True
     show_plot = False
 
     # custom values for this run of training
@@ -272,14 +277,38 @@ if __name__ == '__main__':
     # a simple one, a medium one and a complex one
     # you can of course use a single model, but 'models_constructors' has to be
     # list
+    several_models = True
     models_constructors = [sklearn.linear_model.Ridge,
                            sklearn.kernel_ridge.KernelRidge,
                            xgb.XGBRegressor]
 
     # prefix to be attached to submissions
-    submission_prefix = "my_sub"
+    submission_prefix = "my_sub06"
+
+    # colors for plotting
+    colors = ['red', 'green', 'cyan', 'magenta', 'yellow', 'brown']
     ############################################################################
     ############################################################################
+    print("""
+>>> Regression modeling of dataset: {}.
+>>> Parameters:
+    - plot_to_file: {},
+    - show_plot: {},
+    - steps_in: {},
+    - steps_out: {},
+    - test_size: {},
+    - past periods: {},
+    - scale method: {},
+    - regression methods: {}.
+    """.format(path_to_data,
+               plot_to_file,
+               show_plot,
+               steps_in,
+               steps_out,
+               test_size,
+               p_periods,
+               scaler_to_use,
+               models_constructors))
 
     # prepare the data
 
@@ -294,6 +323,7 @@ if __name__ == '__main__':
     (dfc, scaler) = scale(dfc, scaler_to_use)
 
     # keep track of the original shape of the dataframe
+    print(">>> shape of data: {}".format(tuple(dfc.shape)))
     (days, series) = tuple(dfc.shape)
 
     # transform the data to a numpy array
@@ -304,15 +334,37 @@ if __name__ == '__main__':
                                       test_size,
                                       f_periods=p_periods)
 
+    print(">>> datasets created with shape: {}".format(tuple(datasets.shape)))
     ############################################################################
     ############################################################################
 
     # fit models to the data
+    print(">>> modeling fit")
     models_by_series_list = []
     # train each model
-    for model in models_constructors:
+
+
+    if several_models:
+        print(">>> fitting several models...")
+        for model in models_constructors:
+            models_by_series = train_for_one_step_all_series(datasets, model,
+                                                             steps_out)
+            models_by_series_list.append(models_by_series)
+    else:
+        print('>>> only one model selected, fitting...')
+        # need to define special model here
+        submission_prefix = 'mysub05_'
+        submission_prefix += 'linear_regression_alone'
+
+        model = sklearn.linear_model.LinearRegression()
+
+        models_constructors = [model]
+
+        print(">>> model: {}".format(str(model)))
+
         models_by_series = train_for_one_step_all_series(datasets, model,
-                                                         steps_out)
+                                                         steps_out,
+                                                         f_clone=True)
         models_by_series_list.append(models_by_series)
 
     ############################################################################
@@ -327,6 +379,7 @@ if __name__ == '__main__':
     # predict the validation dataframe
     validation_futures = []
 
+    print(">>> predict validation set")
     # one by model in models_constructors
     for models_by_series in models_by_series_list:
         X_validation_preds = predict_custom_out_all_series(X_validation,
@@ -336,7 +389,7 @@ if __name__ == '__main__':
 
         # create the dataframe
         validation_future = pd.DataFrame(X_validation_preds,
-                              index=y_validation_dataframe.index)
+                                         index=y_validation_dataframe.index)
 
         # rename columns
         validation_future = validation_future.rename(columns=create_rename_dic())
@@ -345,15 +398,38 @@ if __name__ == '__main__':
         validation_future_unscaled = unscale(validation_future, scaler)
         validation_futures.append(validation_future_unscaled)
 
+    print(">>> compute the smape score by series and models")
     # compute the smape score and put it in an array, one per series
-    number_of_models = len(models_constructors)
+    number_of_models = len(models_by_series_list)
     scores = np.zeros((number_of_models, series))
     for i in range(number_of_models):
         scores[i] = compute_score(df.copy(), validation_futures[i], steps_out, smape_loss)
 
-    X_future, _ = create_validation_dataframe(dfc, steps_in, series,
-                                                                       f_periods=p_periods,
-                                                                       f_offset=0)
+    weighted_validation = weighted_prediction(scores, validation_futures)
+    weighted_score = compute_score(df.copy(), weighted_validation, steps_out, smape_loss)
+
+
+    print(">>> plot and safe the scores")
+    plt.figure(figsize=(16, 10))
+    for i in range(len(models_constructors)):
+        plt.plot(scores[i], color=colors[i])
+
+    plt.plot(weighted_score, color=colors[len(models_constructors) + 1])
+    legend_for_scores = [str(m) for m in models_constructors]
+    legend_for_scores.append("weighted prediction")
+    plt.legend(legend_for_scores)
+    plt.title("Smape scores")
+    plt.xlabel("series")
+    plt.ylabel("smape score")
+    if plot_to_file:
+        plt.savefig(('plot_pdf/' + submission_prefix + '_smape_scores.pdf'))
+    if show_plot:
+        plt.show()
+
+    print(">>> predict the future")
+    # predict the future
+    X_future, _ = create_validation_dataframe(dfc, steps_in, series, f_periods=p_periods,
+                                              f_offset=0)
 
     X_future = np.array([x.reshape((1, -1)) for x in X_future])
 
@@ -372,17 +448,19 @@ if __name__ == '__main__':
 
         preds_futures.append(preds_future)
 
+    print(">>> new prediction using a weighted mean of the predictions")
     # create a new prediction with a weighted mean of all others predictions
-    wp = weighted_prediction(scores, preds_futures)
+    weighted_future = weighted_prediction(scores, preds_futures)
 
+    print(">>> plot and save to file if necessary")
     # plot validation and predictions
-    colors = ['red', 'green', 'cyan', 'magenta', 'yellow', 'brown']
+
     preds_futures_length = len(preds_futures)
 
     for column in validation_futures[0].columns:
         plt.figure(figsize=(16, 10))
         plt.plot(df.tail(100)[column], color='blue')
-        plt.plot(wp[column], color='black')
+        plt.plot(weighted_future[column], color='black')
 
         for i in range(preds_futures_length):
             plt.plot(validation_futures[i][column],
@@ -397,15 +475,28 @@ if __name__ == '__main__':
         plt.title('Predictions of ' + str(column))
 
         if plot_to_file:
-            plt.savefig(('plot_pdf/validation_plus_predictions_of_'
-                         + str(column) +'.pdf'))
+            plt.savefig(('plot_pdf/' + submission_prefix +
+                         'validation_plus_predictions_of_'
+                         + str(column) + '.pdf'))
 
         if show_plot:
             plt.show()
-
 
     ############################################################################
     ############################################################################
 
     # now save submissions to csv files
+    path_to_submissions = 'submissions'
+    for i in range(len(models_constructors)):
+        method_name = str(models_constructors[i])
+        future = preds_futures[i]
+        name_of_submission = (path_to_submissions + "/" + submission_prefix
+                              + "_" + method_name + '.csv')
+        sub = keyvalue(future)
+        sub.to_csv(name_of_submission, index=False)
+
     # TODO: do this tomorrow
+    # also weighted submission
+    sub = keyvalue(weighted_future)
+    name_of_submission = path_to_submissions + "/" + submission_prefix + "_" + 'weighted' + '.csv'
+    sub.to_csv(name_of_submission, index=False)
