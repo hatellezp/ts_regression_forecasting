@@ -10,8 +10,8 @@ import sklearn.kernel_ridge
 from sklearn import preprocessing
 from sklearn import base
 
-from tools import *
-from preprocessing import *
+from regression_tools import *
+from regresson_preprocessing import *
 
 ####################################################################################################
 ####################################################################################################
@@ -278,12 +278,13 @@ if __name__ == '__main__':
     # you can of course use a single model, but 'models_constructors' has to be
     # list
     several_models = True
-    models_constructors = [sklearn.linear_model.Ridge,
+    models_constructors = [sklearn.linear_model.LinearRegression,
+                           sklearn.linear_model.Ridge,
                            sklearn.kernel_ridge.KernelRidge,
                            xgb.XGBRegressor]
 
     # prefix to be attached to submissions
-    submission_prefix = "my_sub06"
+    submission_prefix = "my_sub08"
 
     # colors for plotting
     colors = ['red', 'green', 'cyan', 'magenta', 'yellow', 'brown']
@@ -332,7 +333,8 @@ if __name__ == '__main__':
     # create the datasets, one per serie
     datasets = to_regression_examples(data, steps_in, steps_out, series, days,
                                       test_size,
-                                      f_periods=p_periods)
+                                      f_periods=p_periods,
+                                      f_splitter_method=split_to_test2)
 
     print(">>> datasets created with shape: {}".format(tuple(datasets.shape)))
     ############################################################################
